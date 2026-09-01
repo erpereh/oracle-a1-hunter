@@ -132,14 +132,15 @@ jobs:
 
                   MADRID_TIME="$(TZ=Europe/Madrid date '+%d/%m/%Y %H:%M')"
 
-                  MESSAGE="🎉 ¡Oracle A1 conseguida!
-
-El Stack de Oracle ha terminado correctamente.
-Región: ${OCI_REGION}
-Estado: SUCCEEDED
-Fecha: ${MADRID_TIME}
-
-A1 Hunter se va a detener automáticamente para no realizar más intentos."
+                  printf -v MESSAGE '%s\n' \
+                    "🎉 ¡Oracle A1 conseguida!" \
+                    "" \
+                    "El Stack de Oracle ha terminado correctamente." \
+                    "Región: ${OCI_REGION}" \
+                    "Estado: SUCCEEDED" \
+                    "Fecha: ${MADRID_TIME}" \
+                    "" \
+                    "A1 Hunter se va a detener automáticamente para no realizar más intentos."
 
                   send_telegram "$MESSAGE"
 
@@ -187,13 +188,16 @@ A1 Hunter se va a detener automáticamente para no realizar más intentos."
                     echo "$LOGS" | tail -n 100
 
                     MADRID_TIME="$(TZ=Europe/Madrid date '+%d/%m/%Y %H:%M')"
-                    MESSAGE="⚠️ Oracle A1 Hunter ha encontrado un error distinto a falta de capacidad.
 
-Estado: FAILED
-Región: ${OCI_REGION}
-Fecha: ${MADRID_TIME}
+                    printf -v MESSAGE '%s\n' \
+                      "⚠️ Oracle A1 Hunter ha encontrado un error distinto a falta de capacidad." \
+                      "" \
+                      "Estado: FAILED" \
+                      "Región: ${OCI_REGION}" \
+                      "Fecha: ${MADRID_TIME}" \
+                      "" \
+                      "Revisa GitHub Actions / Oracle Resource Manager porque este error no se reintentará automáticamente en esta ejecución."
 
-Revisa GitHub Actions / Oracle Resource Manager porque este error no se reintentará automáticamente en esta ejecución."
                     send_telegram "$MESSAGE" || true
 
                     exit 1
@@ -336,14 +340,15 @@ Revisa GitHub Actions / Oracle Resource Manager porque este error no se reintent
             exit 0
           fi
 
-          MESSAGE="⏳ Oracle A1: todavía sin suerte hoy.
-
-Último estado: ${STATE}
-Intentos registrados: ${ATTEMPTS}
-Región: ${OCI_REGION}
-Fecha: ${MADRID_TIME}
-
-El bot sigue intentando automáticamente cada ~5 minutos. Te avisaré en cuanto lo consiga."
+          printf -v MESSAGE '%s\n' \
+            "⏳ Oracle A1: todavía sin suerte hoy." \
+            "" \
+            "Último estado: ${STATE}" \
+            "Intentos registrados: ${ATTEMPTS}" \
+            "Región: ${OCI_REGION}" \
+            "Fecha: ${MADRID_TIME}" \
+            "" \
+            "El bot sigue intentando automáticamente cada ~5 minutos. Te avisaré en cuanto lo consiga."
 
           send_telegram "$MESSAGE"
           echo "Daily Telegram report sent."
