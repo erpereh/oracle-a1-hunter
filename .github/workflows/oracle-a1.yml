@@ -52,6 +52,8 @@ jobs:
           chmod 600 "$HOME/.oci/config"
 
       - name: Test OCI authentication
+        env:
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           echo "Testing OCI authentication..."
           oci os ns get >/dev/null
@@ -61,6 +63,7 @@ jobs:
         shell: bash
         env:
           OCI_STACK_ID: ${{ secrets.OCI_STACK_ID }}
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           set -euo pipefail
 
@@ -68,6 +71,8 @@ jobs:
           echo " Oracle A1 Hunter"
           echo "=========================================="
           echo ""
+
+          echo "Checking latest Resource Manager job..."
 
           JOBS="$(
             oci resource-manager job list \
@@ -77,80 +82,110 @@ jobs:
               --limit 1
           )"
 
-          COUNT="$(echo "$JOBS" | jq '.data | length')"
-
           SHOULD_APPLY=false
 
-          if [ "$COUNT" -eq 0 ]; then
+          # Si todavía no existe ningún job
+          if [ -z "$(echo "$JOBS" | tr -d '[:space:]')" ]; then
             echo "No previous jobs found."
             SHOULD_APPLY=true
           else
-            STATE="$(echo "$JOBS" | jq -r '.data[0]["lifecycle-state"]')"
-            JOB_ID="$(echo "$JOBS" | jq -r '.data[0].id')"
 
-            echo "Latest job: $JOB_ID"
-            echo "State: $STATE"
-            echo ""
+            COUNT="$(
+              echo "$JOBS" |
+              jq -r 'if (.data | type) == "array" then (.data | length) else 0 end'
+            )"
 
-            case "$STATE" in
-              SUCCEEDED)
-                echo "=========================================="
-                echo " SUCCESS"
-                echo " Oracle A1 has already been provisioned."
-                echo "=========================================="
-                exit 0
-                ;;
+            if [ "$COUNT" -eq 0 ]; then
 
-              ACCEPTED|IN_PROGRESS|CANCELING)
-                echo "A Resource Manager job is still running."
-                echo "Skipping this cycle."
-                exit 0
-                ;;
+              echo "No previous jobs found."
+              SHOULD_APPLY=true
 
-              FAILED)
-                echo "Previous Apply failed."
-                echo "Reading Terraform logs..."
+            else
 
-                sleep 2
+              STATE="$(
+                echo "$JOBS" |
+                jq -r '.data[0]["lifecycle-state"] // empty'
+              )"
 
-                LOGS="$(
-                  oci resource-manager job get-job-logs-content \
-                    --job-id "$JOB_ID" 2>&1 || true
-                )"
+              JOB_ID="$(
+                echo "$JOBS" |
+                jq -r '.data[0].id // empty'
+              )"
 
-                if echo "$LOGS" | grep -Eqi \
-                  "out of host capacity|out of capacity"; then
+              echo "Latest job: $JOB_ID"
+              echo "State: $STATE"
+              echo ""
 
-                  echo ""
-                  echo "A1 capacity unavailable."
-                  echo "Retry allowed."
-                  SHOULD_APPLY=true
-                else
-                  echo ""
+              case "$STATE" in
+
+                SUCCEEDED)
                   echo "=========================================="
-                  echo " NON-CAPACITY ERROR"
-                  echo " Automatic retries stopped."
+                  echo " SUCCESS"
+                  echo " Oracle A1 has already been provisioned."
+                  echo " Nothing else to do."
                   echo "=========================================="
+                  exit 0
+                  ;;
+
+                ACCEPTED|IN_PROGRESS|CANCELING)
+                  echo "A Resource Manager job is still running."
+                  echo "Skipping this cycle."
+                  exit 0
+                  ;;
+
+                FAILED)
+                  echo "Previous Apply failed."
+                  echo "Reading Terraform logs..."
                   echo ""
 
-                  echo "$LOGS" | tail -n 100
+                  LOGS="$(
+                    oci resource-manager job get-job-logs-content \
+                      --job-id "$JOB_ID" 2>&1 || true
+                  )"
+
+                  if echo "$LOGS" | grep -Eqi \
+                    "out of host capacity|out of capacity"; then
+
+                    echo "A1 capacity unavailable."
+                    echo "Retry allowed."
+                    SHOULD_APPLY=true
+
+                  else
+
+                    echo "=========================================="
+                    echo " NON-CAPACITY ERROR"
+                    echo " Automatic retries stopped."
+                    echo "=========================================="
+                    echo ""
+
+                    echo "$LOGS" | tail -n 100
+
+                    exit 1
+
+                  fi
+                  ;;
+
+                CANCELED)
+                  echo "Previous job was canceled."
+                  echo "Not retrying automatically."
                   exit 1
-                fi
-                ;;
+                  ;;
 
-              CANCELED)
-                echo "Previous job was canceled."
-                exit 1
-                ;;
+                *)
+                  echo "Unexpected state: '$STATE'"
+                  echo ""
+                  echo "Raw OCI response:"
+                  echo "$JOBS"
+                  exit 1
+                  ;;
 
-              *)
-                echo "Unexpected state: $STATE"
-                exit 1
-                ;;
-            esac
+              esac
+
+            fi
           fi
 
           if [ "$SHOULD_APPLY" = true ]; then
+
             echo ""
             echo "Launching Terraform Apply..."
 
@@ -160,11 +195,17 @@ jobs:
                 --execution-plan-strategy AUTO_APPROVED
             )"
 
-            NEW_JOB_ID="$(echo "$NEW_JOB" | jq -r '.data.id')"
+            NEW_JOB_ID="$(
+              echo "$NEW_JOB" |
+              jq -r '.data.id'
+            )"
 
             echo ""
             echo "=========================================="
             echo " New attempt launched"
             echo " Job: $NEW_JOB_ID"
             echo "=========================================="
+            echo ""
+            echo "The next GitHub Actions run will check it."
+
           fi
