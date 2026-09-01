@@ -1,0 +1,170 @@
+name: Oracle A1 Hunter
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Cada 5 minutos, evitando el minuto 00
+    - cron: "2-57/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-a1-hunter
+  cancel-in-progress: false
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install OCI CLI
+        run: |
+          python -m pip install --quiet --disable-pip-version-check oci-cli
+
+      - name: Configure OCI
+        shell: bash
+        env:
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.oci"
+
+          printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+
+          cat > "$HOME/.oci/config" <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          key_file=$HOME/.oci/oci_api_key.pem
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          EOF
+
+          chmod 600 "$HOME/.oci/config"
+
+      - name: Test OCI authentication
+        run: |
+          echo "Testing OCI authentication..."
+          oci os ns get >/dev/null
+          echo "OCI authentication OK"
+
+      - name: Check Oracle A1 capacity
+        shell: bash
+        env:
+          OCI_STACK_ID: ${{ secrets.OCI_STACK_ID }}
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo " Oracle A1 Hunter"
+          echo "=========================================="
+          echo ""
+
+          JOBS="$(
+            oci resource-manager job list \
+              --stack-id "$OCI_STACK_ID" \
+              --sort-by TIMECREATED \
+              --sort-order DESC \
+              --limit 1
+          )"
+
+          COUNT="$(echo "$JOBS" | jq '.data | length')"
+
+          SHOULD_APPLY=false
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No previous jobs found."
+            SHOULD_APPLY=true
+          else
+            STATE="$(echo "$JOBS" | jq -r '.data[0]["lifecycle-state"]')"
+            JOB_ID="$(echo "$JOBS" | jq -r '.data[0].id')"
+
+            echo "Latest job: $JOB_ID"
+            echo "State: $STATE"
+            echo ""
+
+            case "$STATE" in
+              SUCCEEDED)
+                echo "=========================================="
+                echo " SUCCESS"
+                echo " Oracle A1 has already been provisioned."
+                echo "=========================================="
+                exit 0
+                ;;
+
+              ACCEPTED|IN_PROGRESS|CANCELING)
+                echo "A Resource Manager job is still running."
+                echo "Skipping this cycle."
+                exit 0
+                ;;
+
+              FAILED)
+                echo "Previous Apply failed."
+                echo "Reading Terraform logs..."
+
+                sleep 2
+
+                LOGS="$(
+                  oci resource-manager job get-job-logs-content \
+                    --job-id "$JOB_ID" 2>&1 || true
+                )"
+
+                if echo "$LOGS" | grep -Eqi \
+                  "out of host capacity|out of capacity"; then
+
+                  echo ""
+                  echo "A1 capacity unavailable."
+                  echo "Retry allowed."
+                  SHOULD_APPLY=true
+                else
+                  echo ""
+                  echo "=========================================="
+                  echo " NON-CAPACITY ERROR"
+                  echo " Automatic retries stopped."
+                  echo "=========================================="
+                  echo ""
+
+                  echo "$LOGS" | tail -n 100
+                  exit 1
+                fi
+                ;;
+
+              CANCELED)
+                echo "Previous job was canceled."
+                exit 1
+                ;;
+
+              *)
+                echo "Unexpected state: $STATE"
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ "$SHOULD_APPLY" = true ]; then
+            echo ""
+            echo "Launching Terraform Apply..."
+
+            NEW_JOB="$(
+              oci resource-manager job create-apply-job \
+                --stack-id "$OCI_STACK_ID" \
+                --execution-plan-strategy AUTO_APPROVED
+            )"
+
+            NEW_JOB_ID="$(echo "$NEW_JOB" | jq -r '.data.id')"
+
+            echo ""
+            echo "=========================================="
+            echo " New attempt launched"
+            echo " Job: $NEW_JOB_ID"
+            echo "=========================================="
+          fi
