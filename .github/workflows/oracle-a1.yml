@@ -2,15 +2,22 @@ name: Oracle A1 Hunter
 
 on:
   workflow_dispatch:
+    inputs:
+      test_daily_report:
+        description: "Enviar ahora una prueba del aviso diario de Telegram"
+        required: false
+        default: false
+        type: boolean
 
   schedule:
     # Reintento de capacidad cada ~5 minutos
     - cron: "2-57/5 * * * *"
 
-    # Dos ventanas para enviar el resumen a las 20:13 de Madrid
-    # tanto en horario de verano (UTC+2) como de invierno (UTC+1).
-    - cron: "13 18 * * *"
-    - cron: "13 19 * * *"
+    # Dos ventanas para enviar el resumen a las 14:00 de Madrid:
+    # 12:00 UTC durante horario de verano (UTC+2)
+    # 13:00 UTC durante horario de invierno (UTC+1)
+    - cron: "0 12 * * *"
+    - cron: "0 13 * * *"
 
 permissions:
   contents: read
@@ -22,7 +29,7 @@ concurrency:
 
 jobs:
   hunt:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '2-57/5 * * * *'
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.test_daily_report != true) || github.event.schedule == '2-57/5 * * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -242,7 +249,7 @@ jobs:
           fi
 
   daily-report:
-    if: github.event.schedule == '13 18 * * *' || github.event.schedule == '13 19 * * *'
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.test_daily_report == true) || github.event.schedule == '0 12 * * *' || github.event.schedule == '0 13 * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -253,17 +260,27 @@ jobs:
         run: |
           LOCAL_HOUR="$(TZ=Europe/Madrid date '+%H')"
           LOCAL_TIME="$(TZ=Europe/Madrid date '+%d/%m/%Y %H:%M')"
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$LOCAL_HOUR" = "14" ]; then
+            SHOULD_RUN=true
+          else
+            SHOULD_RUN=false
+          fi
+
           echo "hour=$LOCAL_HOUR" >> "$GITHUB_OUTPUT"
           echo "time=$LOCAL_TIME" >> "$GITHUB_OUTPUT"
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+
           echo "Madrid time: $LOCAL_TIME"
+          echo "Should send daily report: $SHOULD_RUN"
 
       - name: Install OCI CLI
-        if: steps.madrid_time.outputs.hour == '20'
+        if: steps.madrid_time.outputs.should_run == 'true'
         run: |
           python -m pip install --quiet --disable-pip-version-check oci-cli
 
       - name: Configure OCI
-        if: steps.madrid_time.outputs.hour == '20'
+        if: steps.madrid_time.outputs.should_run == 'true'
         shell: bash
         env:
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -290,7 +307,7 @@ jobs:
           chmod 600 "$HOME/.oci/config"
 
       - name: Send daily Telegram report
-        if: steps.madrid_time.outputs.hour == '20'
+        if: steps.madrid_time.outputs.should_run == 'true'
         shell: bash
         env:
           OCI_STACK_ID: ${{ secrets.OCI_STACK_ID }}
