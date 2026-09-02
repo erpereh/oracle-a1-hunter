@@ -20,6 +20,8 @@ La arquitectura usa **cron-job.org como scheduler**, **GitHub Actions como runne
 - 🔁 Reintenta el Stack cada **5 minutos** mediante cron-job.org.
 - 🧠 Comprueba el último Job antes de lanzar otro `Apply`.
 - ✅ Reintenta automáticamente solo ante errores de capacidad.
+- ⏱️ Trata `429 TooManyRequests` de OCI como un límite temporal y espera al siguiente ciclo en lugar de marcar el run como fallo.
+- 🚫 Usa `--no-retry` al crear el nuevo Job para evitar que el CLI de OCI consuma minutos haciendo reintentos internos cuando Oracle está limitando peticiones.
 - 🛑 Si aparece un error diferente, detiene ese intento y te avisa.
 - 📲 Envía un informe diario por Telegram si sigue sin haber suerte.
 - 🎉 Te avisa inmediatamente cuando Oracle devuelve `SUCCEEDED`.
@@ -36,6 +38,8 @@ flowchart TD
     E -->|IN_PROGRESS| F[Esperar]
     E -->|FAILED| G{¿Out of capacity?}
     G -->|Sí| H[Nuevo Apply]
+    H -->|Aceptado| D
+    H -->|429 TooManyRequests| F
     G -->|No| I[Telegram ⚠️]
     E -->|SUCCEEDED| J[Telegram 🎉]
     J --> K[Desactivar workflow]
@@ -410,6 +414,20 @@ o:
 out of capacity
 ```
 
+Cuando intenta crear el siguiente Job de Resource Manager, ejecuta el OCI CLI con `--no-retry`. Si Oracle responde:
+
+```text
+429 TooManyRequests
+```
+
+o:
+
+```text
+Too many requests for the tenant
+```
+
+el workflow lo considera un **throttle temporal**, termina el run correctamente y espera al siguiente disparo de cron-job.org (~5 minutos). De esta forma un límite temporal de la API no aparece como un fallo real ni mantiene el runner ocupado con reintentos internos del SDK.
+
 Si el fallo es distinto, detiene ese run y envía una alerta por Telegram.
 
 ---
@@ -508,6 +526,22 @@ Para el PAT del scheduler usa el mínimo alcance posible: **solo este repositori
 ```
 
 ✅ Es el caso esperado. En el siguiente ciclo cron-job.org volverá a disparar el workflow.
+
+### `429 TooManyRequests`
+
+Puedes ver un mensaje parecido a:
+
+```text
+code: TooManyRequests
+message: Too many requests for the tenant
+status: 429
+```
+
+✅ También es un caso transitorio. Significa que Oracle Resource Manager está aplicando rate limiting al intento de crear el siguiente Job.
+
+Oracle A1 Hunter usa `--no-retry` para no quedarse varios minutos reintentando dentro del mismo runner. Ese ciclo termina en verde y cron-job.org vuelve a intentarlo aproximadamente 5 minutos después.
+
+No necesitas cambiar tus Secrets ni reiniciar nada por un `429` aislado.
 
 ### No recibo ejecuciones cada 5 minutos
 
