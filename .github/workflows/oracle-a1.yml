@@ -220,13 +220,41 @@ jobs:
             echo ""
             echo "Launching Terraform Apply..."
 
+            set +e
             NEW_JOB="$(
               oci resource-manager job create-apply-job \
                 --stack-id "$OCI_STACK_ID" \
-                --execution-plan-strategy AUTO_APPROVED
+                --execution-plan-strategy AUTO_APPROVED \
+                --no-retry 2>&1
             )"
+            CREATE_EXIT=$?
+            set -e
 
-            NEW_JOB_ID="$(echo "$NEW_JOB" | jq -r '.data.id')"
+            if [ "$CREATE_EXIT" -ne 0 ]; then
+              if echo "$NEW_JOB" | grep -Eqi "TooManyRequests|too many requests|status[^0-9]*429|HTTP[^0-9]*429"; then
+                echo "=========================================="
+                echo " OCI RATE LIMITED"
+                echo " Oracle returned HTTP 429 / TooManyRequests."
+                echo " This is transient; the next ~5 minute cycle will retry."
+                echo "=========================================="
+                exit 0
+              fi
+
+              echo "=========================================="
+              echo " APPLY CREATION ERROR"
+              echo " Oracle rejected the new Resource Manager job."
+              echo "=========================================="
+              echo "$NEW_JOB"
+              exit "$CREATE_EXIT"
+            fi
+
+            NEW_JOB_ID="$(echo "$NEW_JOB" | jq -r '.data.id // empty')"
+
+            if [ -z "$NEW_JOB_ID" ]; then
+              echo "Could not read the new Resource Manager job ID."
+              echo "$NEW_JOB"
+              exit 1
+            fi
 
             echo ""
             echo "=========================================="
