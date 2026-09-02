@@ -9,29 +9,18 @@ on:
         default: false
         type: boolean
 
-  schedule:
-    # Reintento de capacidad cada ~5 minutos
-    - cron: "2-57/5 * * * *"
-
-    # Dos ventanas para enviar el resumen a las 14:00 de Madrid:
-    # 12:00 UTC durante horario de verano (UTC+2)
-    # 13:00 UTC durante horario de invierno (UTC+1)
-    - cron: "0 12 * * *"
-    - cron: "0 13 * * *"
-
 permissions:
   contents: read
   actions: write
 
-concurrency:
-  group: oracle-a1-hunter
-  cancel-in-progress: false
-
 jobs:
   hunt:
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.test_daily_report != true) || github.event.schedule == '2-57/5 * * * *' }}
+    if: ${{ inputs.test_daily_report != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: oracle-a1-hunter-retry
+      cancel-in-progress: false
 
     steps:
       - name: Install OCI CLI
@@ -53,14 +42,14 @@ jobs:
           printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
           chmod 600 "$HOME/.oci/oci_api_key.pem"
 
-          cat > "$HOME/.oci/config" <<EOF
+          cat > "$HOME/.oci/config" <<EOF_CONFIG
           [DEFAULT]
           user=$OCI_USER_OCID
           fingerprint=$OCI_FINGERPRINT
           key_file=$HOME/.oci/oci_api_key.pem
           tenancy=$OCI_TENANCY_OCID
           region=$OCI_REGION
-          EOF
+          EOF_CONFIG
 
           chmod 600 "$HOME/.oci/config"
 
@@ -147,7 +136,8 @@ jobs:
                     "Estado: SUCCEEDED" \
                     "Fecha: ${MADRID_TIME}" \
                     "" \
-                    "A1 Hunter se va a detener automáticamente para no realizar más intentos."
+                    "A1 Hunter va a desactivar el workflow de GitHub para no realizar más intentos." \
+                    "Puedes desactivar también los dos jobs de cron-job.org."
 
                   send_telegram "$MESSAGE"
 
@@ -206,7 +196,6 @@ jobs:
                       "Revisa GitHub Actions / Oracle Resource Manager porque este error no se reintentará automáticamente en esta ejecución."
 
                     send_telegram "$MESSAGE" || true
-
                     exit 1
                   fi
                   ;;
@@ -245,42 +234,23 @@ jobs:
             echo " Job: $NEW_JOB_ID"
             echo "=========================================="
             echo ""
-            echo "The next GitHub Actions run will check it."
+            echo "The next retry run will check it."
           fi
 
   daily-report:
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.test_daily_report == true) || github.event.schedule == '0 12 * * *' || github.event.schedule == '0 13 * * *' }}
+    if: ${{ inputs.test_daily_report == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: oracle-a1-hunter-daily
+      cancel-in-progress: false
 
     steps:
-      - name: Check Madrid time
-        id: madrid_time
-        shell: bash
-        run: |
-          LOCAL_HOUR="$(TZ=Europe/Madrid date '+%H')"
-          LOCAL_TIME="$(TZ=Europe/Madrid date '+%d/%m/%Y %H:%M')"
-
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$LOCAL_HOUR" = "14" ]; then
-            SHOULD_RUN=true
-          else
-            SHOULD_RUN=false
-          fi
-
-          echo "hour=$LOCAL_HOUR" >> "$GITHUB_OUTPUT"
-          echo "time=$LOCAL_TIME" >> "$GITHUB_OUTPUT"
-          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
-
-          echo "Madrid time: $LOCAL_TIME"
-          echo "Should send daily report: $SHOULD_RUN"
-
       - name: Install OCI CLI
-        if: steps.madrid_time.outputs.should_run == 'true'
         run: |
           python -m pip install --quiet --disable-pip-version-check oci-cli
 
       - name: Configure OCI
-        if: steps.madrid_time.outputs.should_run == 'true'
         shell: bash
         env:
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -295,19 +265,18 @@ jobs:
           printf '%s\n' "$OCI_PRIVATE_KEY" > "$HOME/.oci/oci_api_key.pem"
           chmod 600 "$HOME/.oci/oci_api_key.pem"
 
-          cat > "$HOME/.oci/config" <<EOF
+          cat > "$HOME/.oci/config" <<EOF_CONFIG
           [DEFAULT]
           user=$OCI_USER_OCID
           fingerprint=$OCI_FINGERPRINT
           key_file=$HOME/.oci/oci_api_key.pem
           tenancy=$OCI_TENANCY_OCID
           region=$OCI_REGION
-          EOF
+          EOF_CONFIG
 
           chmod 600 "$HOME/.oci/config"
 
       - name: Send daily Telegram report
-        if: steps.madrid_time.outputs.should_run == 'true'
         shell: bash
         env:
           OCI_STACK_ID: ${{ secrets.OCI_STACK_ID }}
